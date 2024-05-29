@@ -1,0 +1,47 @@
+Column,Units,Variance,Source,Description
+YEAR,,,,Year of Data Collection
+LOCATION,,,,Site Name
+SID,,,,Unique sample identifier
+PLOT,,,,Plot Name (REP_ROW_COL)
+REP,,,,Replicate block
+TREATMENT,,,,treatment description (DATE CROP)
+DATE,,,,"planting date treatment (early, late)"
+CROP,,,fieldbook,"crop treatment (oat, pea, oat-pea, oat-pea-flax)"
+ROW,,,,Row coordinate
+COL,,,,column coordinate
+BARCODE,,,,for scanning of SID
+PLANTING_DATE,,,,date the crop was planted
+STAND_OAT,plants ha-1,,4x 1m sections of row per plot,plant population at 100% emergence
+STAND_PEA,plants ha-1,,4x 1m sections of row per plot,plant population at 100% emergence
+STAND_FLAX,plants ha-1,,4x 1m sections of row per plot,plant population at 100% emergence
+OAT_HEIGHT_FLOWER,cm,,4 plants per plot,height to top of main panicle at 50% flowering
+PEA_HEIGHT_FLOWER,cm,,4 plants per plot,height to top whorl at flowering
+FLAX_HEIGHT_FLOWER,cm,,4 plants per plot,height to top branch at flowering
+OAT_HEIGHT_MATURITY,cm,,4 plants per plot,height to top of main panicle at maturity
+PEA_HEIGHT_MATURITY,cm,,4 plants per plot,height to top whorl at maturity
+FLAX_HEIGHT_MATURITY,cm,,4 plants per plot,height to top branch at oat maturity
+OAT_BIOMASS_FLOWER,kg ha-1,,2x 1m row pairs,biomass at 50% oat flowering
+PEA_BIOMASS_FLOWER,kg ha-1,,2x 1m row pairs,biomass at 50% oat flowering
+FLAX_BIOMASS_FLOWER,kg ha-1,,2x 1m row pairs,biomass at 50% oat flowering
+OAT_BIOMASS_MATURITY,kg ha-1,,4x 1m row pairs,biomass at maturity
+OAT_YIELD_HAND,kg ha-1,,4x 1m row pairs,"threshed grain from hand-harvested, mature biomass"
+OAT_HI,kg kg-1,,4x 1m row pairs,yield/biomass of hand harvested samples
+OAT_PANICLES,count,,4x 1m row pairs,oat panicles estimated from a subsample of mature biomass
+PEA_BIOMASS_MATURITY,kg ha-1,,4x 1m row pairs,biomass at maturity
+PEA_YIELD_HAND,kg ha-1,,4x 1m row pairs,"threshed grain from hand-harvested, mature biomass"
+PEA_HI,kg kg-1,,4x 1m row pairs,yield/biomass of hand harvested samples
+FLAX_BIOMASS_MATURITY,kg ha-1,,4x 1m row pairs,biomass at maturity
+FLAX_YIELD_HAND,kg ha-1,,4x 1m row pairs,"threshed grain from hand-harvested, mature biomass"
+FLAX_HI,kg kg-1,,4x 1m row pairs,yield/biomass of hand harvested samples
+WEED_BIOMASS_MATURITY,kg ha-1,,4x 1m row pairs,biomass at maturity
+COMBO_BIOMASS_MATURITY,kg ha-1,,4x 1m row pairs,biomass of all crops at maturity
+COMBO_YIELD_HAND,kg ha-1,,4x 1m row pairs,"threshed grain from hand-harvested, mature biomass of all crops"
+COMBO_HI,kg kg-1,,4x 1m row pairs,yield/biomass of hand harvested samples of all crops
+PEA_PODS_HA,count,,4 plants per plot,pods of four hand-harvested plants * population
+OAT_FLOWER_DATE,MM/DD/YYYY,,observation; ortho imagery,estimated date of 50% flowering
+PEA_FLOWER_DATE,MM/DD/YYYY,,observation; ortho imagery,estimated date of 50% plants reached flowering
+FLAX_FLOWER_DATE,MM/DD/YYYY,,observation; ortho imagery,estimated date of 50% of plants reached flowering
+OAT_MATURE_DATE,MM/DD/YYYY,,observation; ortho imagery,estimated date of 50% maturity
+PEA_MATURE_DATE,MM/DD/YYYY,,observation; ortho imagery,estimated date of 50% maturity
+FLAX_MATURE_DATE,MM/DD/YYYY,,observation; ortho imagery,estimated date of 50% maturity; not reached in 2023
+PREDATION,eggs eaten/eggs planted,,proportion of eggs eaten by arthropods over a 1-week period (confirm with Karl),
