@@ -56,11 +56,14 @@ libs = c(
 
 for (i in libs) {
   if (!require(i, character.only=TRUE)) {
-    renv::install(i)
+    renv::install(i, prompt=FALSE)
     library(i, character.only=TRUE)
   }
 }
+
+renv::snapshot(packages=libs)
 ```
+
 
 ```{r}
 sapply(libs, function(x) paste(packageVersion(x), collapse='.')) %>% 
