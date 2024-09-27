@@ -1,0 +1,2266 @@
+---
+title: "ESDSWRF Oat-Pea Polyculture Manuscript Analysis"
+author: PME
+created: October 12, 2023
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding=encoding, output_dir=here::here('Results'))})
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
+
+# Overview
+Analysis for the oat-pea polyculture experiment. This
+experiment compared the performance of oat, pea, and oat-pea in a mix.
+Performance was measured by yield, biomass, and stability. The experiment was 
+planted on two dates, late April and June 1st, to simulate site-years. The 
+early planting date included a 3-way, oat-pea-flax mixture. 
+
+Major questions are?
+
+1. Does the oat-pea mixture yield more per acre than monocrops? This will be
+assessed by calculating land equivalent ratios.
+2. Is the oat-pea mixture more stable across weather patterns than the
+monocrops? This will be assessed as change in yield across planting dates.
+3. Does the addition of flax hinder oat and pea development? 
+
+The design is split plot with four blocks. The main plots are planting date
+with crop mixture as subplots. Therefore, the error structure is 
+`~(1|BLOCK) + (1|BLOCK:PLANTING) + residuals` (error terms for block and planting date
+within block). 
+
+## Load
+```{r message=FALSE, warning=FALSE}
+libs = c(
+  'Matrix', # must install manually for some reason
+  'multcompView', # also must install manually
+  'lme4',
+  'car',
+  'ggplot2',
+  'ggtext',
+  'multcomp',
+  'emmeans',
+  'tidyr',
+  'magrittr',
+  'here',
+  'wesanderson',
+  'gridExtra'
+)
+
+for (i in libs) {
+  if (!require(i, character.only=TRUE)) {
+    renv::install(i)
+    library(i, character.only=TRUE)
+  }
+}
+```
+
+```{r}
+sapply(libs, function(x) paste(packageVersion(x), collapse='.')) %>% 
+  c(R=paste(R.Version()[c('major', 'minor')], collapse='.'), .) %>% 
+  as.matrix %>% 
+  set_colnames('Version')
+```
+
+## General Parameters
+```{r message=FALSE, warning=FALSE}
+colors = wes_palette('Darjeeling1', 5)[-3]
+
+prettyplanting = c(early = 'Planting A',
+                   late = 'Planting B')
+
+# p_adjust = 'none'  # Fisher's unprotected LSD. Most permissive.
+# p_adjust = 'tukey' # emmeans default. Almost as stringent as bonferroni. 
+p_adjust = 'fdr'   # control false discovery rate - intermediate.
+
+```
+
+```{r}
+in_dir = 'Data'
+in_df = 'analysis dataframe.csv'
+out_dir = 'Results'
+
+df = here(in_dir, in_df) %>% 
+  read.csv
+
+names(df) %<>% gsub('DATE', 'PLANTING', .) %>% 
+  gsub('PLANTING_PLANTING', 'PLANTING_DATE', .)
+```
+
+
+```{r include=FALSE}
+str(df)
+```
+
+```{r}
+facts = c(
+  'YEAR', 'LOCATION', 'SID', 'PLOT', 'REP', 'TREATMENT', 'PLANTING', 'CROP', 'ROW', 'COL',
+  'PLANTING_DATE'
+)
+
+df[, facts] %<>% lapply(as.factor)
+```
+
+## Functions
+```{r}
+se = function(x) sd(x)/sqrt(length(x))
+
+get_mean_se = function(ff, data) {
+  aggregate(ff, 
+            data=data, 
+            FUN=function(x) c(MEAN=mean(x),
+                              SE=se(x))) %>% 
+    do.call(data.frame, .)
+}
+
+group_Y = function(data, resp, pred, bump=0.05) {
+  ff = paste(resp, pred, sep='~') %>% 
+    formula
+  out = aggregate(ff, data=data, function(x) mean(x) + se(x))
+  names(out) %<>% gsub(resp, 'Y', .)
+  out[, 'Y'] = out[, 'Y'] + bump*max(out[, 'Y'])
+  return(out)
+}
+
+gg_formatter = function(x) {
+  out = x + 
+    theme_minimal() +
+    theme(panel.grid=element_blank(), 
+          axis.ticks=element_line(color='black', linewidth=0.1), 
+          axis.ticks.length=unit(0.3, units='mm'),
+          legend.position='bottom',
+          axis.title.x=element_markdown(),
+          axis.title.y=element_markdown())
+  return(out)
+}
+
+text_sizer = function(x, size=8) {
+  require(ggplot2)
+  out = x +
+    theme(legend.text=element_text(size=size-1),
+        strip.text=element_markdown(size=size),
+        axis.title=element_markdown(size=size-1),
+        axis.text=element_text(size=size-1),
+        text=element_text(size=size),
+        legend.box.spacing=margin(0.1))
+  return(out)
+}
+```
+
+
+# QA/QC
+Treatments contingency table
+```{r}
+with(df, table(CROP, PLANTING))
+```
+
+Missing values of different measurements.
+```{r}
+sapply(df, function(x) sum(is.na(x))) %>% 
+  .[.>0]
+```
+Missing some height data (late planting). Others are consistent with experimental design. 
+
+Very rough outlier check.
+```{r fig.height=15, fig.width=18}
+is_data = sapply(df, is.numeric)
+
+tt = cbind(df[, c('CROP', 'PLANTING', 'REP')], 
+           df[, is_data]) %>% 
+  pivot_longer(cols=where('is.numeric'))
+tt[, 'value'] %<>% sapply(function(x) ifelse(x==0, NA, x))
+ggplot(tt,
+       aes(x=CROP,
+           y=value,
+           color=PLANTING, 
+           shape=REP)) +
+  facet_wrap(~name, scales='free') +
+  scale_shape_manual(values=1:4) +
+  geom_point(size=3)
+```
+*Outliers*:
+
+- Weed biomass, which is to be expected due to patchiness.That specific part of the field was especially weedy. 
+- Predation seems bimodal, so tough to analyze. 
+- Pea harvest index - late planting, oat-pea, replicate A. This is worth investigating/re-measuring.
+
+# Treatment Properties
+Stand counts
+```{r}
+aggregate(STAND_OAT ~ CROP + PLANTING, 
+          data=df, 
+          mean)
+```
+
+```{r}
+aggregate(STAND_PEA ~ CROP + PLANTING, data=df, mean)
+```
+
+
+```{r}
+aggregate(STAND_FLAX ~ CROP + PLANTING, data=df, mean)
+```
+
+# Weather
+```{r}
+in_wet = 'Jan1thruSept26_2023.csv'
+
+wet = here(in_dir, 
+           in_wet) %>% 
+  read.csv
+
+names(wet) = c(
+  'YEAR',
+  'DOY',
+  'DATE',
+  'MINT',
+  'MAXT',
+  'AVGT',
+  'PPT')
+
+wet$`NA` = NULL
+wet$PPT = wet$PPT * 25.4
+wet$DATE %<>% as.Date(format='%m/%d/%Y')
+
+planting_dates = df$PLANTING_DATE %>% 
+  as.Date(format='%m/%d/%Y') %>% 
+  unique %>% 
+  sort %>% 
+  set_names(c('early', 'late'))
+
+flowering_dates = c(early='2023-06-16', 
+                    late='2023-07-17') %>% 
+  as.Date
+
+harvest_dates = c(early='2023-07-17',
+                  late='2023-08-22') %>% 
+  as.Date()
+
+season=c(early='early',
+         late='late') %>% 
+  lapply(function(x) c(planting=planting_dates[[x]],
+                       flowering=flowering_dates[[x]],
+                       harvest=harvest_dates[[x]]))
+
+```
+
+```{r}
+subset_weather = function(dates, weather) {
+  out = subset(weather, DATE >= dates[1] & DATE <= dates[2])
+  return(out)
+}
+
+GDD = function(low, high, base=0, ceiling=Inf, cumulative=TRUE) {
+  x = cbind(low, high)
+  x[x<base] = base
+  x[x>ceiling] = ceiling
+
+  gdd = (x[,2] + x[,1]) / 2
+  gdd = gdd - base
+  
+  if (cumulative) gdd = cumsum(gdd)
+  
+  return(gdd)
+}
+
+get_weather = function(planting=c('early', 'late'), weather) {
+  dates = season[[planting]][c('planting', 'harvest')]
+  x = subset_weather(dates, weather)
+  
+  out = data.frame(
+    PLANTING=planting,
+    DAP = seq_len(nrow(x)),
+    GDD = GDD(x$MINT, x$MAXT, cumulative=TRUE),
+    CUM_PPT = cumsum(x$PPT),
+    MAXT = x$MAXT
+  )
+  return(out)
+}
+```
+
+
+```{r}
+early = get_weather('early', wet)
+late = get_weather('late', wet)
+
+pltdf = rbind(early, late) %>% 
+  pivot_longer(cols=c('GDD', 'CUM_PPT', 'MAXT'))
+
+pltdf$prettyplanting = pltdf$PLANTING %>%
+  as.character %>%
+  prettyplanting[.]
+
+prettynames = c(
+  CUM_PPT = 'Cumulative<br>Precipitation [mm]',
+  MAXT = 'Maximum<br>Temperature [C]',
+  GDD = 'Cumulative<br>Growing Degree Days [C]'
+)
+pltdf$prettynames = prettynames[pltdf$name] %>% 
+  factor(levels=prettynames)
+
+
+flower_DAP = lapply(season, function(x) x['flowering']-x['planting'])
+flower_DAP = names(flower_DAP) %>% 
+  lapply(function(x) subset(pltdf, PLANTING==x & DAP==flower_DAP[[x]])) %>% 
+  do.call(rbind, .)
+flower_DAP$NAME = 'Flowering Date'
+
+```
+
+## Plot Fig 1 - Weather
+```{r}
+plt = ggplot(pltdf) +
+  facet_wrap(~prettynames,
+             scales='free_y') +
+  scale_color_manual(values=colors[3:4]) +
+  # geom_hline(aes(yintercept=0),
+  #            color='lightgray',
+  #            linewidth=0.05) +
+  geom_path(aes(x=DAP,
+                y=value,
+                color=prettyplanting),
+            linewidth=0.2) +
+  scale_shape_manual(values=21) +
+  scale_fill_manual(values=colors[3:4],
+                    guide=NULL) +
+  geom_point(data=flower_DAP,
+             aes(x=DAP,
+                 y=value,
+                 fill=prettyplanting,
+                 shape=NAME),
+             size=2,
+             stroke=0.2,
+             color='black') +
+  labs(x='Days After Planting',
+       y=NULL) +
+  guides(color=guide_legend(title=NULL, order=1),
+         shape=guide_legend(title=NULL, order=2)) +
+  theme_minimal() +
+  theme(panel.grid=element_blank(),
+        axis.ticks=element_line(color='black', linewidth=0.1), 
+        axis.ticks.length=unit(0.3, units='mm'),
+        legend.position='bottom',
+        legend.title.position='bottom')
+
+plt
+```
+```{r fig.height=2.5, fig.width=6}
+fig1 = text_sizer(plt)
+fig1
+```
+
+```{r}
+here(out_dir, 
+     'Figure 1 - Weather.jpeg') %>% 
+  jpeg(height=2.5, width=6, units='in', res=600)
+fig1
+dev.off()
+```
+
+
+
+# Productivity
+## Total Yield
+The formula is:
+```{r}
+resp = 'COMBO_YIELD_HAND'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+dd = subset(df, CROP != 'oat-pea-flax')
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula %T>%
+  print
+```
+
+```{r message=FALSE, warning=FALSE}
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+A marginal interaction between crop and planting date. Crop has a main effect, as does planting.
+
+```{r}
+ggplot(df,
+       aes(x=CROP,
+           y=.data[[resp]],
+           color=PLANTING)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+In general, oats yielded better than mixes and peas. The late planting was
+more productive - especially for the monocultures. For the early planting, the mix
+seemed as productive as the oat monoculture. Whether flax affected oat-pea
+yields is uncertain.
+
+Yields were quite poor in all cases. Will need to compare to oat-clover yields.
+
+This suggests that the oat-pea mix is more stable across weather patterns.
+
+
+```{r}
+emeans = emmeans(mod, ~PLANTING | CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans
+```
+
+
+```{r}
+emeans1 = emmeans(mod, ~CROP | PLANTING) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans1
+
+colnames(emeans1) %<>% gsub('.group', '.GROUP', .)
+```
+
+```{r}
+keep = c('PLANTING', 'CROP', '.group')
+
+has_flax = grepl('flax', emeans$CROP)
+emeans[has_flax, '.group'] = ''
+
+emeans %<>% 
+  .[, keep] %>% 
+  merge(emeans1)
+
+emeans[, '.group'] = with(emeans, 
+                          paste0(trimws(.GROUP), 
+                                 trimws(.group)))
+```
+
+
+### Plot
+
+```{r}
+prettyplanting = c(early = 'Planting A',
+                   late = 'Planting B')
+grp = 'CROP+PLANTING'
+
+
+
+annotate_df = c('CROP', 'PLANTING') %>% 
+  df[, .] %>% 
+  unique %>% 
+  merge(emeans, all.y=TRUE)
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp, grp, data=df)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', 'COMBO_YIELD_HAND') %>% 
+  df[, .] %>% 
+  rbind(
+    data.frame(CROP='oat-pea-flax' %>% 
+                 factor(levels=levels(df$CROP)),
+               PLANTING='late' %>% 
+                 factor(levels=levels(df$PLANTING)),
+               COMBO_YIELD_HAND=0
+               )
+  )
+pltdf$prettyplanting = pltdf$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+annotate_df$prettyplanting = annotate_df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+```
+
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=COMBO_YIELD_HAND,
+                 fill=prettyplanting)) +
+  scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            size=2.5,
+            position=dodger) +
+  labs(x=NULL,
+       y='Total Grain Yield [kg ha<sup>-1</sup>]',
+       fill=NULL)
+plt %<>% gg_formatter()
+plt
+```
+
+
+
+Exact means and standard errors are:
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=df)
+```
+
+### Format for Export
+```{r}
+fig2_data = list()
+fig2_annotate = list()
+
+annotate_df$RESP=resp
+pltdf$RESP = resp
+names(pltdf) %<>% gsub(resp, 'Y', .)
+
+fig2_data[[resp]] = pltdf
+fig2_annotate[[resp]] = annotate_df
+```
+
+
+```{r fig.height=2.5, fig.width=3}
+fig2_yield = text_sizer(plt)
+fig2_yield
+```
+
+
+## Total Biomass
+```{r message=FALSE, warning=FALSE}
+resp = 'COMBO_BIOMASS_MATURITY'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+dd = subset(df, CROP != 'oat-pea-flax')
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+No interaction between crop and planting date. Crop has a main effect, as does planting.
+
+```{r}
+ggplot(df,
+       aes(x=CROP,
+           y=.data[[resp]],
+           color=PLANTING)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+
+```{r}
+emeans = emmeans(mod, ~PLANTING | CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE, adjust=p_adjust)
+emeans
+```
+
+
+```{r}
+emeans1 = emmeans(mod, ~CROP | PLANTING) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE, adjust=p_adjust)
+colnames(emeans1) %<>% gsub('.group', '.GROUP', .)
+
+emeans1
+```
+
+### Plot
+```{r}
+keep = c('PLANTING', 'CROP', '.group')
+
+has_flax = grepl('flax', emeans$CROP)
+emeans[has_flax, '.group'] = ''
+
+emeans %<>% 
+  .[, keep] %>% 
+  merge(emeans1)
+
+emeans[, '.group'] = with(emeans, 
+                          paste0(trimws(.GROUP), 
+                                 trimws(.group)))
+```
+
+```{r}
+prettyplanting = c(early = 'Planting A',
+                   late = 'Planting B')
+
+annotate_df = c('CROP', 'PLANTING') %>% 
+  df[, .] %>% 
+  unique %>% 
+  merge(emeans,
+        all.y=TRUE)
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp, grp, data=df)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', resp) %>% 
+  df[, .]
+late_flax = data.frame(CROP='oat-pea-flax' %>% 
+                 factor(levels=levels(df$CROP)),
+               PLANTING='late' %>% 
+                 factor(levels=levels(df$PLANTING)),
+               x=0) %>% 
+  set_names(names(pltdf))
+pltdf %<>% rbind(late_flax)
+               
+pltdf$prettyplanting = pltdf$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+annotate_df$prettyplanting = annotate_df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+```
+
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=.data[[resp]],
+                 fill=prettyplanting)) +
+  scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            size=2.5,
+            position=dodger) +
+  labs(x=NULL,
+       y='Total Biomass [kg ha<sup>-1</sup>]',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+Exact means and standard errors are:
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=df)
+```
+
+### Format for Export
+```{r fig.height=2.5, fig.width=3}
+annotate_df$RESP=resp
+annotate_df$prettyplanting %<>% gsub('Planting ', '', .)
+pltdf$RESP = resp
+pltdf$prettyplanting %<>% gsub('Planting ', '', .)
+names(pltdf) %<>% gsub(resp, 'Y', .)
+
+fig2_data[[resp]] = pltdf
+fig2_annotate[[resp]] = annotate_df
+
+fig2_biomass = text_sizer(plt)
+fig2_biomass
+```
+
+## Plotted Land Equivalent Ratios
+```{r}
+means_df = subset(df, CROP %in% c('oat', 'pea'))
+oat_means = aggregate(OAT_YIELD_HAND ~ PLANTING + CROP, data=means_df, mean)
+pea_means = aggregate(PEA_YIELD_HAND ~ PLANTING + CROP, data=means_df, mean)
+means_df = merge(oat_means, pea_means)
+means_df %<>% rbind(
+  data.frame(
+    PLANTING = c('early', 'late') %>% 
+      factor(levels=levels(means_df$PLANTING)),
+    CROP = c(NA, NA),
+    OAT_YIELD_HAND= c(0, 0),
+    PEA_YIELD_HAND = c(0, 0)
+  )
+)
+
+annotate_df = data.frame(
+  PLANTING = c('early', 'early', 'late', 'late'),
+  x = c(350, 1800, 500, 2000),
+  y = c(50, 1000, 100, 2100),
+  LABEL = c('LER < 1', 'LER > 1', 'LER < 1', 'LER > 1')
+)
+
+means_df$prettyplanting = means_df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+
+annotate_df$prettyplanting = annotate_df$PLANTING %>% 
+  prettyplanting[.]
+
+df$prettyplanting = df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+```
+
+
+```{r}
+plt = ggplot(df,
+       aes(x=OAT_YIELD_HAND,
+           y=PEA_YIELD_HAND,
+           color=CROP,
+           shape=CROP)) +
+  scale_color_manual(values=colors) +
+  scale_shape_manual(values=c(18, 17, 15, 16)) +
+  facet_wrap(~prettyplanting, scales='free') +
+  geom_polygon(data=means_df,
+            aes(x=OAT_YIELD_HAND,
+                y=PEA_YIELD_HAND),
+            inherit.aes=FALSE,
+            fill='lightgray',
+            color=NA) +
+  geom_point(size=1.5,
+             alpha=0.7) +
+  geom_text(data=annotate_df,
+             aes(x=x,
+                 y=y, 
+                 label=LABEL),
+            size=2.5,
+            inherit.aes=FALSE) +
+  labs(x='Oat Yield [kg ha<sup>-1</sup>]',
+       y='Pea Yield [kg ha<sup>-1</sup>]',
+       color=NULL,
+       shape=NULL) +
+  theme_minimal()
+plt %<>% gg_formatter()
+```
+
+
+scatterplot approach. Points above the line are overyielding. So the early
+planting date overyielded. 
+
+### Format for export
+```{r fig.height=2.5, fig.width=4}
+fig2_LER = text_sizer(plt)
+fig2_LER
+```
+
+
+## Calculated LER
+LER = sum(y_poly/y_mono)
+```{r}
+yieldnames = c('OAT', 'PEA') %>% 
+  paste0('_YIELD_HAND')
+
+cols = c('REP', 'PLANTING', 'CROP', yieldnames)
+
+ler = df[, cols] %>% 
+  subset(CROP != 'oat-pea-flax')
+
+ler = pivot_wider(ler, 
+                  names_from='CROP',
+                  values_from=all_of(yieldnames))
+
+ler$OAT_FRAC = with(ler, `OAT_YIELD_HAND_oat-pea`/`OAT_YIELD_HAND_oat`)
+ler$PEA_FRAC = with(ler, `PEA_YIELD_HAND_oat-pea`/`PEA_YIELD_HAND_pea`)
+ler$LER = with(ler, OAT_FRAC + PEA_FRAC)
+```
+
+
+```{r}
+to_drop = grepl('YIELD_HAND', colnames(ler))
+ler %<>% .[, !to_drop]
+```
+
+
+```{r message=FALSE, warning=FALSE}
+resp = 'LER'
+pred = 'PLANTING'
+err = '(1|REP)'
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=ler)
+Anova(mod, test.statistic='F')
+```
+No difference in LER across planting dates.
+
+
+```{r}
+ggplot(ler,
+       aes(x=PLANTING,
+           y=.data[[resp]],
+           color=REP)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+
+```{r}
+with(ler, tapply(LER, PLANTING, t.test, mu=1))
+```
+On average LER no different from 1, surprisingly. In the early planting date it was a small increase and noise was such that we didn't see any strong differences.
+
+Exact means and standard errors are:
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=ler)
+```
+### Figure 2 - yield and LER
+```{r fig.height=4.5, fig.width=5}
+xlabs = c('oat' = 'Oat',
+          'oat-pea' = 'Oat\nPea',
+          'oat-pea-flax' = 'Oat\nPea\nFlax',
+          'pea' = 'Pea')
+
+collabs = c('oat' = 'Oat',
+          'oat-pea' = 'Oat-Pea',
+          'oat-pea-flax' = 'Oat-Pea-Flax',
+          'pea' = 'Pea')
+
+p1 = fig2_yield + 
+  scale_x_discrete(labels=xlabs) +
+  labs(tag='a)') +
+  theme(legend.position='none')
+p2 = fig2_biomass +
+  scale_x_discrete(labels=xlabs) +
+  labs(tag='b)') +
+  theme(legend.position=c(0.8, 1),
+        legend.key.size=unit(0.12, 'in'),
+        legend.title=element_text(size=8),
+        axis.ticks=element_line(color='black', linewidth=0.1), 
+        axis.ticks.length=unit(0.3, units='mm'))
+p3 = fig2_LER +
+  labs(tag='c)') +
+  scale_color_manual(values=colors,
+                     labels=collabs) +
+  scale_shape_manual(values=c(18, 17, 15, 16),
+                     labels=collabs) +
+  theme(legend.position='right',
+        legend.key.size=unit(0.14, 'in'))
+
+marrangeGrob(grobs=list(p1, p2, p3),
+             layout_matrix=matrix(c(1,2,
+                                    1,2,
+                                    1,2,
+                                    3,3,
+                                    3,3,
+                                    3,3,
+                                    3,3), 
+                                  nrow=7, 
+                                  byrow=TRUE),
+             top=NULL)
+
+```
+### Export
+```{r warning=FALSE}
+
+here(out_dir,
+     'Figure 2 - Yield and LER.jpg') %>% 
+  jpeg(width=5, height=4.5, units='in', res=300)
+
+marrangeGrob(grobs=list(p1, p2, p3),
+             layout_matrix=matrix(c(1,2,
+                                    3,3), 
+                                  nrow=2, 
+                                  byrow=TRUE),
+             top=NULL)
+dev.off()
+```
+
+
+
+## Stability
+As differences in yield between planting dates
+```{r}
+keep_cols = c('REP', 'PLANTING', 'CROP', 'COMBO_YIELD_HAND')
+dif = subset(df, CROP != 'oat-pea-flax', select=keep_cols) %>% 
+  pivot_wider(names_from='PLANTING',
+              values_from='COMBO_YIELD_HAND')
+dif$DIF = with(dif, late - early)
+```
+
+
+```{r}
+ttest = tapply(dif$DIF, dif$CROP, t.test) %>% 
+  sapply('[[', c('p.value'))
+ttest
+```
+oat and pea yields differed across planting dates, while oat-pea yield was not different.
+
+```{r}
+tt = get_mean_se(DIF ~ CROP, data=dif)
+tt
+```
+
+
+Oat and pea yields were higher in the late planting than the early. Oat-pea was not significantly different between plantings.
+
+### Plot Fig 3 - Stability
+```{r}
+resp='DIF'
+prettyplanting = c(early = 'Planting A',
+                   late = 'Planting B')
+
+grp = 'CROP'
+
+
+ttest %<>% sapply(function(x) ifelse(x<0.05, '*', 'n.s.')) %>% 
+  unlist(recursive=FALSE)
+annotate_df = c('CROP') %>% 
+  dif[, .] %>% 
+  unique
+annotate_df$.group = ttest[as.character(annotate_df$CROP)]
+
+grpY = group_Y(resp, grp, data=dif)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+
+pltdf = dif
+
+```
+
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=.data[[resp]])) +
+  scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8,
+               fill=colors[2]) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            size=2,
+            position=dodger) +
+  labs(x=NULL,
+       y='Difference in Yield [kg ha<sup>-1</sup>]<br>Planting B - Planting A',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+
+### Format for export
+```{r fig.height=2, fig.width=3}
+xlabs = c('oat' = 'Oat',
+          'oat-pea' = 'Oat\nPea',
+          'oat-pea-flax' = 'Oat\nPea\nFlax',
+          'pea' = 'Pea')
+fig3 = text_sizer(plt, 8)
+fig3 = fig3 + 
+  scale_x_discrete(labels=xlabs)
+fig3
+```
+
+```{r}
+here(out_dir,
+     'Figure 3 - Stability.jpeg') %>% 
+  jpeg(width=3, height=2, units='in', res=300)
+fig3
+dev.off()
+```
+
+
+
+
+# Individual crop yields
+## Oat
+```{r message=FALSE, warning=FALSE}
+resp = 'OAT_YIELD_HAND'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+dd = subset(df, CROP != 'oat-pea-flax')
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+For oats, A marginal planting date effect. Most is an interaction between mix and planting date. 
+
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=df)
+```
+```{r}
+emeans = emmeans(mod, ~CROP | PLANTING) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans
+```
+
+
+## Pea
+```{r message=FALSE, warning=FALSE}
+resp = 'PEA_YIELD_HAND'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+dd = subset(df, CROP != 'oat-pea-flax')
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+A marginal interaction between crop and planting date. Crop has a main effect, as does planting.
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=df)
+```
+
+```{r}
+emeans = emmeans(mod, ~CROP | PLANTING) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans
+```
+
+
+
+## Plot
+```{r}
+pltdf = df[, c('CROP', 'PLANTING', 'OAT_YIELD_HAND', 'PEA_YIELD_HAND')] %>% 
+  pivot_longer(cols=where('is.numeric'))
+ggplot(pltdf,
+       aes(x=CROP,
+           y=value,
+           color=PLANTING)) +
+  facet_wrap(~name) +
+  geom_point(alpha=0.5, 
+             size=2) +
+  labs(y='Yield [kg/ha]') +
+  theme_minimal()
+```
+In the mix, pea did better at the later planting date, while oats did slightly better at the earlier planting date. 
+
+# Quality
+## Grain ratios
+```{r}
+ratios = subset(df, CROP=='oat-pea')
+ratios$RATIO = with(ratios, OAT_YIELD_HAND/PEA_YIELD_HAND)
+ratios = ratios[-c(2), ]
+
+ggplot(ratios,
+       aes(x=PLANTING,
+           y=RATIO)) +
+  geom_point(size=2) +
+  ylab("oat:pea")
+```
+
+```{r}
+mod = lmer(RATIO ~ PLANTING + (1|REP), data=ratios)
+Anova(mod, test.statistic='F')
+```
+```{r}
+emeans = emmeans(mod, ~PLANTING) %>% 
+  cld(Letters=LETTERS, reverse=TRUE)
+emeans
+```
+```{r}
+annotate_df = emeans %>% 
+  as.data.frame
+annotate_df$.group %<>% trimws()
+annotate_df$Y = 0.5
+
+pltdf = c('RATIO', 'PLANTING') %>% 
+  ratios[, .] 
+pltdf$prettyplanting = pltdf$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+```
+
+```{r}
+plt = ggplot(pltdf, 
+             aes(x=prettyplanting,
+                 y=RATIO)) +
+  # scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8,
+               fill=colors[2]) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger) +
+  geom_text(data=annotate_df,
+            aes(x=prettyplanting,
+                y=Y,
+                label=.group),
+            inherit.aes=FALSE,
+            size=6,
+            position=dodger) +
+  labs(x=NULL,
+       y='Oat:Pea Grain Ratio [mass/mass]',
+       fill=NULL) +
+  theme(panel.background=element_blank(),
+        legend.position='bottom')
+  
+plt
+```
+
+
+```{r fig.height=5.5, fig.width=6.5}
+plt = text_sizer(plt)
+plt
+```
+
+```{r}
+here('Results', 'Grain Ratios.jpg') %>% 
+  jpeg(height=5.5, width=6.5, units='in', res=300)
+plt
+dev.off()
+```
+
+## Protein Content
+```{r message=FALSE, warning=FALSE}
+resp = 'COMBO_CP'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+
+dd = subset(df, CROP != 'oat-pea-flax')
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+Another interaction effect.
+
+```{r}
+ggplot(df,
+       aes(x=CROP,
+           y=.data[[resp]],
+           color=PLANTING)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+Oat-pea had qualitatively higher protein content.
+
+### Comparisions
+*Planting date within crop*
+```{r}
+emeans = emmeans(mod, ~PLANTING | CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans
+```
+
+*Crop within planting date*
+```{r}
+emeans1 = emmeans(mod, ~CROP | PLANTING) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans1
+
+colnames(emeans1) %<>% gsub('.group', '.GROUP', .)
+```
+Pea produced more protein in the late planting due to higher yields despite
+lower protein concentration. Oat-pea showed no significant difference.
+
+*Main effects*
+```{r}
+emmeans(mod, ~CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+```
+
+### Plot
+Merge emmeans
+```{r}
+keep = c('PLANTING', 'CROP', '.group')
+
+has_flax = grepl('flax', emeans$CROP)
+emeans[has_flax, '.group'] = ''
+
+emeans %<>% 
+  .[, keep] %>% 
+  merge(emeans1)
+
+emeans[, '.group'] = with(emeans, 
+                          paste0(trimws(.GROUP), 
+                                 trimws(.group)))
+```
+
+construct plotting and labelling dataframes
+```{r}
+prettyplanting = c(early = 'Planting A',
+                   late = 'Planting B')
+grp = 'CROP+PLANTING'
+
+
+
+annotate_df = c('CROP', 'PLANTING') %>% 
+  df[, .] %>% 
+  unique %>% 
+  merge(emeans, all.y=TRUE)
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp, grp, data=df)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', resp) %>% 
+  df[, .] %>% 
+  rbind(
+    data.frame(CROP='oat-pea-flax' %>% 
+                 factor(levels=levels(df$CROP)),
+               PLANTING='late' %>% 
+                 factor(levels=levels(df$PLANTING)),
+               X=0
+               )
+    %>% set_names(c('CROP', 'PLANTING', resp))
+  )
+pltdf$prettyplanting = pltdf$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+annotate_df$prettyplanting = annotate_df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+```
+
+Plot
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=.data[[resp]],
+                 fill=prettyplanting)) +
+  scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            size=2.5,
+            position=dodger) +
+  labs(x=NULL,
+       y='Crude Protein [g kg<sup>-1</sup>]',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+
+```{r fig.height=2.5, fig.width=3}
+plt_protein = text_sizer(plt)
+plt_protein
+```
+Exact means and standard errors are:
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=df)
+```
+
+
+## TDN
+```{r message=FALSE, warning=FALSE}
+resp = 'COMBO_TDN'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+dd = subset(df, CROP != 'oat-pea-flax')
+
+# df[, resp] = df$COMBO_CP * df$COMBO_YIELD_HAND
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+Strong interaction between crop and planting date.
+
+```{r}
+ggplot(df,
+       aes(x=CROP,
+           y=.data[[resp]],
+           color=PLANTING)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+All crops produced similar amounts of protein across planting dates, despite
+the very different grain ratios of the oat-pea mix.
+
+
+### Comparisions
+*Planting date within crop*
+```{r}
+emeans = emmeans(mod, ~PLANTING | CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans
+```
+
+*Crop within planting date*
+```{r}
+emeans1 = emmeans(mod, ~CROP | PLANTING) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans1
+
+colnames(emeans1) %<>% gsub('.group', '.GROUP', .)
+```
+Pea produced more protein in the late planting due to higher yields despite
+lower protein concentration. Oat-pea showed no significant difference.
+
+*Main effects*
+```{r}
+emmeans(mod, ~CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+```
+
+### Plot
+Merge emmeans
+```{r}
+keep = c('PLANTING', 'CROP', '.group')
+
+has_flax = grepl('flax', emeans$CROP)
+emeans[has_flax, '.group'] = ''
+
+emeans %<>% 
+  .[, keep] %>% 
+  merge(emeans1)
+
+emeans[, '.group'] = with(emeans, 
+                          paste0(trimws(.GROUP), 
+                                 trimws(.group)))
+```
+
+construct plotting and labelling dataframes
+```{r}
+prettyplanting = c(early = 'Planting A',
+                   late = 'Planting B')
+grp = 'CROP+PLANTING'
+
+
+
+annotate_df = c('CROP', 'PLANTING') %>% 
+  df[, .] %>% 
+  unique %>% 
+  merge(emeans, all.y=TRUE)
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp, grp, data=df)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', resp) %>% 
+  df[, .] %>% 
+  rbind(
+    data.frame(CROP='oat-pea-flax' %>% 
+                 factor(levels=levels(df$CROP)),
+               PLANTING='late' %>% 
+                 factor(levels=levels(df$PLANTING)),
+               X=0
+               )
+    %>% set_names(c('CROP', 'PLANTING', resp))
+  )
+pltdf$prettyplanting = pltdf$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+annotate_df$prettyplanting = annotate_df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+```
+
+Plot
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=.data[[resp]],
+                 fill=prettyplanting)) +
+  scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            size=2.5,
+            position=dodger) +
+  labs(x=NULL,
+       y='Total Digestible<br>Nutrients [g kg<sup>-1</sup>]',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+
+```{r fig.height=2.5, fig.width=3}
+plt_TDN = text_sizer(plt)
+plt_TDN
+```
+Exact means and standard errors are:
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=df)
+```
+
+
+## ADF
+```{r message=FALSE, warning=FALSE}
+resp = 'COMBO_ADF'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+dd = subset(df, CROP != 'oat-pea-flax')
+
+# df[, resp] = df$COMBO_CP * df$COMBO_YIELD_HAND
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+Strong interaction between crop and planting date.
+
+```{r}
+ggplot(df,
+       aes(x=CROP,
+           y=.data[[resp]],
+           color=PLANTING)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+All crops produced similar amounts of protein across planting dates, despite
+the very different grain ratios of the oat-pea mix.
+### Comparisions
+*Planting date within crop*
+```{r}
+emeans = emmeans(mod, ~PLANTING | CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans
+```
+
+*Crop within planting date*
+```{r}
+emeans1 = emmeans(mod, ~CROP | PLANTING) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans1
+
+colnames(emeans1) %<>% gsub('.group', '.GROUP', .)
+```
+Pea produced more protein in the late planting due to higher yields despite
+lower protein concentration. Oat-pea showed no significant difference.
+
+*Main effects*
+```{r}
+emeans2 = emmeans(mod, ~CROP) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans2
+```
+
+### Plot
+Merge emmeans
+```{r}
+keep = c('PLANTING', 'CROP', '.group')
+
+has_flax = grepl('flax', emeans$CROP)
+emeans[has_flax, '.group'] = ''
+
+emeans %<>% 
+  .[, keep] %>% 
+  merge(emeans1)
+
+emeans[, '.group'] = with(emeans, 
+                          paste0(trimws(.GROUP), 
+                                 trimws(.group)))
+```
+
+construct plotting and labelling dataframes
+```{r}
+prettyplanting = c(early = 'Planting A',
+                   late = 'Planting B')
+grp = 'CROP+PLANTING'
+
+
+
+annotate_df = c('CROP', 'PLANTING') %>% 
+  df[, .] %>% 
+  unique %>% 
+  merge(emeans, all.y=TRUE)
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp, grp, data=df)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', resp) %>% 
+  df[, .] %>% 
+  rbind(
+    data.frame(CROP='oat-pea-flax' %>% 
+                 factor(levels=levels(df$CROP)),
+               PLANTING='late' %>% 
+                 factor(levels=levels(df$PLANTING)),
+               X=0
+               )
+    %>% set_names(c('CROP', 'PLANTING', resp))
+  )
+pltdf$prettyplanting = pltdf$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+annotate_df$prettyplanting = annotate_df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+```
+
+Plot
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=.data[[resp]],
+                 fill=prettyplanting)) +
+  scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            size=2.5,
+            position=dodger) +
+  labs(x=NULL,
+       y='Acid-Detergent<br>Fiber [g kg<sup>-1</sup>]',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+
+```{r fig.height=2.5, fig.width=3}
+plt_ADF = text_sizer(plt)
+plt_ADF
+```
+Exact means and standard errors are:
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=df)
+```
+## NDF
+```{r message=FALSE, warning=FALSE}
+resp = 'COMBO_NDF'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+dd = subset(df, CROP != 'oat-pea-flax')
+
+# df[, resp] = df$COMBO_CP * df$COMBO_YIELD_HAND
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+Strong interaction between crop and planting date.
+
+```{r}
+ggplot(df,
+       aes(x=CROP,
+           y=.data[[resp]],
+           color=PLANTING)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+All crops produced similar amounts of protein across planting dates, despite
+the very different grain ratios of the oat-pea mix.
+
+### Comparisions
+*Planting date within crop*
+```{r}
+emeans = emmeans(mod, ~PLANTING | CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans
+```
+
+*Crop within planting date*
+```{r}
+emeans1 = emmeans(mod, ~CROP | PLANTING) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      adjust=p_adjust)
+emeans1
+
+colnames(emeans1) %<>% gsub('.group', '.GROUP', .)
+```
+Pea produced more protein in the late planting due to higher yields despite
+lower protein concentration. Oat-pea showed no significant difference.
+
+*Main effects*
+```{r}
+emmeans(mod, ~CROP) %>% 
+  cld(Letters=letters,
+      reverse=TRUE,
+      adjust=p_adjust)
+```
+
+### Plot
+Merge emmeans
+```{r}
+keep = c('PLANTING', 'CROP', '.group')
+
+has_flax = grepl('flax', emeans$CROP)
+emeans[has_flax, '.group'] = ''
+
+emeans %<>% 
+  .[, keep] %>% 
+  merge(emeans1)
+
+emeans[, '.group'] = with(emeans, 
+                          paste0(trimws(.GROUP), 
+                                 trimws(.group)))
+```
+
+construct plotting and labelling dataframes
+```{r}
+prettyplanting = c(early = 'Planting A',
+                   late = 'Planting B')
+grp = 'CROP+PLANTING'
+
+
+
+annotate_df = c('CROP', 'PLANTING') %>% 
+  df[, .] %>% 
+  unique %>% 
+  merge(emeans, all.y=TRUE)
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp, grp, data=df)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', resp) %>% 
+  df[, .] %>% 
+  rbind(
+    data.frame(CROP='oat-pea-flax' %>% 
+                 factor(levels=levels(df$CROP)),
+               PLANTING='late' %>% 
+                 factor(levels=levels(df$PLANTING)),
+               X=0
+               )
+    %>% set_names(c('CROP', 'PLANTING', resp))
+  )
+pltdf$prettyplanting = pltdf$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+annotate_df$prettyplanting = annotate_df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+```
+
+Plot
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=.data[[resp]],
+                 fill=prettyplanting)) +
+  scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            size=2.5,
+            position=dodger) +
+  labs(x=NULL,
+       y='Neutral-Detergent<br>Fiber [g kg<sup>-1</sup>]',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+
+```{r fig.height=2.5, fig.width=3}
+plt_NDF = text_sizer(plt)
+plt_NDF
+```
+Exact means and standard errors are:
+
+```{r}
+get_mean_se(paste(resp, pred, sep='~') %>% formula,
+            data=df)
+```
+
+## Plot Fig 4 - Quality
+```{r fig.height=4, fig.width=5}
+xlabs = c('oat' = 'Oat',
+          'oat-pea' = 'Oat\nPea',
+          'oat-pea-flax' = 'Oat\nPea\nFlax',
+          'pea' = 'Pea')
+
+collabs = c('oat' = 'Oat',
+          'oat-pea' = 'Oat-Pea',
+          'oat-pea-flax' = 'Oat-Pea-Flax',
+          'pea' = 'Pea')
+
+p1 = plt_ADF + 
+  scale_x_discrete(labels=xlabs) +
+  labs(tag='a)') +
+  theme(legend.position='none')
+p2 = plt_NDF +
+  scale_x_discrete(labels=xlabs) +
+  labs(tag='b)') +
+  theme(legend.position=c(0.8, 1),
+        legend.key.size=unit(0.12, 'in'),
+        legend.title=element_text(size=8),
+        axis.ticks=element_line(color='black', linewidth=0.1), 
+        axis.ticks.length=unit(0.3, units='mm'))
+p3 = plt_protein + 
+  scale_x_discrete(labels=xlabs) +
+  labs(tag='a)') +
+  theme(legend.position='none')
+p4 = plt_TDN + 
+  scale_x_discrete(labels=xlabs) +
+  labs(tag='a)') +
+  theme(legend.position='none')
+
+marrangeGrob(grobs=list(p1, p2, p3, p4),
+             layout_matrix=matrix(c(1,2,
+                                    3,4), 
+                                  nrow=2, 
+                                  byrow=TRUE),
+             top=NULL)
+
+```
+### Export
+```{r warning=FALSE}
+
+here(out_dir,
+     'Figure 4 - Grain Quality.jpg') %>% 
+  jpeg(width=5, height=4, units='in', res=300)
+
+marrangeGrob(grobs=list(p1, p2, p3, p4),
+             layout_matrix=matrix(c(1,2,
+                                    3,4), 
+                                  nrow=2, 
+                                  byrow=TRUE),
+             top=NULL)
+dev.off()
+```
+
+
+# Services
+
+## Arthropods
+### Egg Predation
+```{r message=FALSE, warning=FALSE}
+resp = 'cbind(PREDATION_EATEN, PREDATION_NOTEATEN)'
+pred = 'CROP'
+err = '(1|REP)'
+
+df$PREDATION = with(df, PREDATION_EATEN/(PREDATION_EATEN + PREDATION_NOTEATEN))
+dd = subset(df, PLANTING != 'late')
+
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+mod = glmer(ff, data=dd, family=binomial(link='logit'))
+mod
+```
+
+
+```{r message=FALSE, warning=FALSE}
+Anova(mod)
+```
+Very strong main effect.
+
+```{r}
+resp2 = 'PREDATION'
+
+ggplot(dd,
+       aes(x=CROP,
+           y=.data[[resp2]],
+           color=CROP,
+           shape=REP)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+
+```{r}
+emeans = emmeans(mod, ~CROP) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      p.adjust='fdr',
+      type='response')
+emeans
+```
+Eggs in oat-pea-flax had a 73% chance of being eaten. Oat was about 1/3 that. 
+
+#### Plot
+```{r}
+# 
+annotate_df = emeans %>%
+  as.data.frame
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp2, grp, data=dd)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', 'PREDATION') %>% 
+  dd[, .]
+
+```
+
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=100*PREDATION)) +
+  # scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8,
+               fill=colors[2]) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y*100,
+                label=.group),
+            inherit.aes=FALSE,
+            size=2,
+            position=dodger) +
+  labs(x=NULL,
+       y='Egg Predation [%]',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+
+```{r}
+eggplt = plt
+```
+
+
+Values in the above graph are:
+
+```{r}
+get_mean_se(paste(resp2, pred, sep='~') %>% 
+              formula,
+            data=df)
+```
+
+
+### Morphospecies Richness
+```{r}
+resp = 'BUGVAC_RICHNESS'
+pred = 'CROP'
+err = '(1|REP)'
+dd = subset(df, PLANTING != 'late')
+
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = glmer(ff, data=dd, family=poisson())
+Anova(mod)
+```
+
+
+```{r}
+ggplot(dd,
+       aes(x=CROP,
+           y=.data[[resp]],
+           color=CROP,
+           shape=REP)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+
+
+
+```{r}
+emeans = emmeans(mod, ~CROP) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      p.adjust='fdr',
+      type='response')
+emeans
+```
+Richness was highest in oat-containing plots and consistently highest.
+
+#### Plot
+```{r}
+grp = 'CROP'
+annotate_df = emeans %>%
+  as.data.frame
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp, grp, data=dd)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', 'BUGVAC_RICHNESS') %>% 
+  dd[, .]
+
+```
+
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=.data[[resp]])) +
+  # scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8,
+               fill=colors[2]) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            inherit.aes=FALSE,
+            size=2,
+            position=dodger) +
+  labs(x=NULL,
+       y='Morphospecies<br>Richness',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+```{r}
+richplt = plt
+```
+
+
+## Arthropod abudnance
+Richness was driven primarily by higher abundance.
+```{r}
+resp = 'BUGVAC_ABUNDANCE'
+pred = 'CROP'
+err = '(1|REP)'
+dd = subset(df, PLANTING != 'late')
+
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = glmer.nb(ff, data=dd)
+Anova(mod)
+```
+
+
+```{r}
+ggplot(dd,
+       aes(x=CROP,
+           y=.data[[resp]],
+           color=CROP,
+           shape=REP)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+
+
+
+```{r}
+emeans = emmeans(mod, ~CROP) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      p.adjust='fdr',
+      type='response')
+emeans
+```
+But the mixed plots had higher abundance. 
+
+#### Plot
+```{r}
+grp = 'CROP'
+annotate_df = emeans %>%
+  as.data.frame
+annotate_df$.group %<>% trimws()
+
+grpY = group_Y(resp, grp, data=dd)
+annotate_df %<>% merge(grpY, all.x=TRUE)
+
+pltdf = c('CROP', 'PLANTING', resp) %>% 
+  dd[, .]
+
+```
+
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=.data[[resp]])) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8,
+               fill=colors[2]) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  geom_text(data=annotate_df,
+            aes(x=CROP,
+                y=Y,
+                label=.group),
+            inherit.aes=FALSE,
+            size=2,
+            position=dodger) +
+  labs(x=NULL,
+       y='Arthropod<br>Abundance',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+```{r}
+abundplt = plt
+```
+
+### Richness with abundance
+```{r}
+resp = 'BUGVAC_RICHNESS'
+pred = 'CROP + BUGVAC_ABUNDANCE'
+err = '(1|REP)'
+dd = subset(df, PLANTING != 'late')
+
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = glmer(ff, data=dd, family=poisson())
+Anova(mod)
+```
+
+```{r}
+ggplot(df,
+       aes(x=BUGVAC_ABUNDANCE,
+           y=BUGVAC_RICHNESS,
+           color=CROP)) +
+  geom_point(size=3)
+```
+
+## Weeds
+
+log<sub>10</sub> transform to meet linear model assumptions.
+```{r message=FALSE, warning=FALSE}
+resp = 'log(WEED_BIOMASS_MATURITY+1, 10)'
+resp1 = 'WEED_BIOMASS_MATURITY'
+pred = 'CROP*PLANTING'
+err = '(1|REP/PLANTING)'
+
+ff = paste(resp, '~', pred, '+', err) %>% 
+  formula
+
+mod = lmer(ff, data=df)
+Anova(mod, test.statistic='F')
+```
+Marginal effect - pea had slightly lower weed biomass, but not meaningfully so. 
+
+```{r}
+ggplot(df,
+       aes(x=CROP,
+           y=.data[[resp1]],
+           color=PLANTING)) +
+  geom_point(alpha=0.5, 
+             size=2)
+```
+Any differences with oat-pea are strongly driven by an outlier. 
+```{r}
+emeans = emmeans(mod, ~CROP|PLANTING) %>% 
+  cld(Letters=LETTERS,
+      reverse=TRUE,
+      p.adjust='fdr',
+      type='response')
+emeans
+```
+But actually, pea is (slightly) lower - and did receive herbicide. 
+
+
+#### Plot
+```{r}
+grp = 'CROP'
+annotate_df = emeans %>%
+  as.data.frame
+annotate_df$.group %<>% trimws()
+
+pltdf = c('CROP', 'PLANTING', resp1) %>% 
+  df[, .]
+late_flax = data.frame(CROP='oat-pea-flax' %>% 
+                 factor(levels=levels(df$CROP)),
+               PLANTING='late' %>% 
+                 factor(levels=levels(df$PLANTING)),
+               x=0) %>% 
+  set_names(names(pltdf))
+pltdf %<>% rbind(late_flax)
+               
+pltdf$prettyplanting = pltdf$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+annotate_df$prettyplanting = annotate_df$PLANTING %>% 
+  as.character %>% 
+  prettyplanting[.]
+
+```
+
+```{r}
+dodger = position_dodge(width=0.8)
+
+plt = ggplot(pltdf, 
+             aes(x=CROP,
+                 y=log(WEED_BIOMASS_MATURITY+1, 10),
+                 fill=prettyplanting)) +
+  scale_fill_manual(values=colors[3:4]) +
+  stat_summary(fun=mean,
+               geom='bar',
+               position=dodger,
+               width=0.8) +
+  stat_summary(fun.data=mean_se,
+               geom='errorbar',
+               width=0,
+               position=dodger,
+               linewidth=0.1) +
+  labs(x=NULL,
+       y='Weed Biomass at<br>Harvest [log<sub>10</sub>(kg ha<sup>-1</sup>)]',
+       fill=NULL)
+plt %<>% gg_formatter
+  
+plt
+```
+```{r}
+weedplt = plt
+```
+
+
+
+## Plot Fig 5 - Services
+```{r fig.height=3.5, fig.width=5}
+xlabs = c('oat' = 'Oat',
+          'oat-pea' = 'Oat\nPea',
+          'oat-pea-flax' = 'Oat\nPea\nFlax',
+          'pea' = 'Pea')
+xlabs1 = c('oat' = 'Oat',
+          'oat-pea' = 'Oat\nPea',
+          'oat-pea-flax' = 'Oat\nPea\nFlax',
+          'pea' = 'Pea\n(herbicide)')
+
+
+p1 = richplt %>% 
+  text_sizer() +
+  labs(tag='a)') +
+  scale_x_discrete(labels=xlabs)
+p2 = abundplt %>% 
+  text_sizer() +
+  labs(tag='b)') +
+  scale_x_discrete(labels=xlabs)
+p3 = eggplt %>% 
+  text_sizer() +
+  labs(tag='c)') +
+  scale_x_discrete(labels=xlabs)
+p4 = weedplt %>% 
+  text_sizer() +
+  labs(tag='d)') +
+  scale_x_discrete(labels=xlabs1) +
+  theme(legend.position=c(0.8, 1),
+        legend.key.size=unit(0.12, 'in'))
+
+marrangeGrob(grobs=list(p1, p2, p3, p4), 
+             layout_matrix=matrix(c(1,2,3,4), 
+                                  nrow=2, 
+                                  byrow=TRUE), 
+             top=NULL)
+```
+
+
+
+```{r}
+here('Results', 'Figure 5 - Services.jpeg') %>% 
+  jpeg(height=3.5, width=5, units='in', res=300)
+marrangeGrob(grobs=list(p1, p2, p3, p4), 
+             layout_matrix=matrix(c(1,2,3,4), 
+                                  nrow=2, 
+                                  byrow=TRUE), 
+             top=NULL)
+dev.off()
+```
+

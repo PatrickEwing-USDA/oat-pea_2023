@@ -1,0 +1,155 @@
+---
+title: "ESDSWRF Oat-Pea Polyculture Manuscript Analysis"
+author: PME
+created: October 12, 2023
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding=encoding, output_dir=here::here('Results'))})
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
+
+# Overview
+Ward labs measured various feed parameters for individual grains in the
+oat-pea study. This notebook combines that with yield data to estimate
+feed quality.
+
+```{r}
+libs = c(
+  'here', 
+  'magrittr',
+  'tidyr',
+  'ggplot2'
+)
+
+for (i in libs) {
+  require(i, character.only=TRUE)
+}
+```
+
+```{r}
+in_dir = 'Data'
+in_df = 'Oat-Pea Data MASTER 2024-01-24.csv'
+in_qu = 'processed_feed.csv'
+
+df = here(in_dir, in_df) %>% 
+  read.csv
+
+qu = here(in_dir, in_qu) %>% 
+  read.csv
+names(qu) %<>% gsub('PLANTING', 'DATE', .)
+```
+
+```{r}
+facts = c(
+  'PLOT',
+  'REP',
+  'TREATMENT',
+  'DATE',
+  'CROP'
+)
+yield_col = '_YIELD_HAND'
+total_yld = paste0('COMBO', yield_col)
+
+qual_metrics = {!(names(qu) %in% facts)} %>% 
+  names(qu)[.] %>%
+  strsplit('_') %>% 
+  sapply(function(x) x[-1]) %>% 
+  unique
+
+subsetter = function(crop, data, facts) {
+  is_crop = grepl(crop, names(data))
+  subdata = c(facts,
+              names(data)[is_crop]) %>% 
+    data[, .]
+  return(subdata)
+}
+```
+
+
+
+# Calculate Pea
+```{r}
+crop = 'PEA'
+yld = paste0(crop, '_YIELD_HAND')
+
+pctyld = paste0(crop, '_YIELD_PCT')
+df[, pctyld] = df[, yld]/df[, total_yld]
+
+tt = merge(
+  subsetter(crop, qu, facts),
+  subsetter(pctyld, df, facts)
+) 
+
+is_qual = !(names(tt) %in% c(facts, pctyld))
+
+tt[, is_qual] %<>% lapply('*', tt[, pctyld])
+pea_part = tt
+```
+
+# Calculate oat
+```{r}
+crop = 'OAT'
+yld = paste0(crop, '_YIELD_HAND')
+
+pctyld = paste0(crop, '_YIELD_PCT')
+df[, pctyld] = df[, yld]/df[, total_yld]
+
+tt = merge(
+  subsetter(crop, qu, facts),
+  subsetter(pctyld, df, facts)
+) 
+
+is_qual = !(names(tt) %in% c(facts, pctyld))
+
+tt[, is_qual] %<>% lapply('*', tt[, pctyld])
+oat_part = tt
+```
+
+# Combine
+```{r}
+out = merge(pea_part, oat_part)
+out[is.na(out)] = 0
+
+for (i in qual_metrics) {
+  name_out = paste0('COMBO_', i)
+  pea_metric = paste0('PEA_', i)
+  oat_metric = paste0('OAT_', i)
+  out[, name_out] = out[, pea_metric] + out[, oat_metric]
+}
+
+keep = grepl('COMBO', names(out)) %>% 
+  names(out)[.] %>% 
+  c(facts, .)
+
+out = merge(qu, out[, keep])
+
+out = merge(df, out)
+```
+
+# Convert percent to SI (g/kg)
+```{r}
+to_convert = c('CP', 'ADF', 'NDF', 'TDN')
+for (i in to_convert) {
+  has_i = grepl(i, names(out))
+  out[has_i] %<>% lapply(function(x) x*10)
+}
+```
+
+# Save
+```{r}
+here(in_dir,
+     'analysis dataframe.csv') %>%
+  write.csv(out,
+            ., 
+            row.names=FALSE)
+```
+
+
